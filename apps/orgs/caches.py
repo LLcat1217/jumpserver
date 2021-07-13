@@ -6,11 +6,11 @@ from orgs.utils import current_org, tmp_to_org
 from common.cache import Cache, IntegerField
 from common.utils import get_logger
 from users.models import UserGroup, User
-from assets.models import Node, AdminUser, SystemUser, Domain, Gateway
+from assets.models import Node, AdminUser, SystemUser, Domain, Gateway, Asset
+from terminal.models import Session
 from applications.models import Application
 from perms.models import AssetPermission, ApplicationPermission
 from .models import OrganizationMember
-
 
 logger = get_logger(__file__)
 
@@ -38,7 +38,7 @@ class OrgRelatedCache(Cache):
         在事务提交之后再发送信号，防止因事务的隔离性导致未获得最新的数据
         """
         def func():
-            logger.info(f'CACHE: Send refresh task {self}.{fields}')
+            logger.debug(f'CACHE: Send refresh task {self}.{fields}')
             refresh_org_cache_task.delay(self, *fields)
         on_commit(func)
 
@@ -64,6 +64,9 @@ class OrgResourceStatisticsCache(OrgRelatedCache):
     asset_perms_amount = IntegerField(queryset=AssetPermission.objects)
     app_perms_amount = IntegerField(queryset=ApplicationPermission.objects)
 
+    total_count_online_users = IntegerField()
+    total_count_online_sessions = IntegerField()
+
     def __init__(self, org):
         super().__init__()
         self.org = org
@@ -75,14 +78,22 @@ class OrgResourceStatisticsCache(OrgRelatedCache):
         return self.org
 
     def compute_users_amount(self):
-        if self.org.is_root():
-            users_amount = User.objects.all().count()
-        else:
-            users_amount = OrganizationMember.objects.values(
-                'user_id'
-            ).filter(org_id=self.org.id).distinct().count()
+        users = User.objects.exclude(role='App')
+
+        if not self.org.is_root():
+            users = users.filter(m2m_org_members__org_id=self.org.id)
+
+        users_amount = users.values('id').distinct().count()
         return users_amount
 
     def compute_assets_amount(self):
+        if self.org.is_root():
+            return Asset.objects.all().count()
         node = Node.org_root()
         return node.assets_amount
+
+    def compute_total_count_online_users(self):
+        return Session.objects.filter(is_finished=False).values_list('user_id').distinct().count()
+
+    def compute_total_count_online_sessions(self):
+        return Session.objects.filter(is_finished=False).count()
